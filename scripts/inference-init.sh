@@ -17,7 +17,7 @@ dnf install -y git python3 python3-pip
 export HOME=/root
 
 # iii CLI
-curl -fsSL https://iii.dev/install.sh | bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | bash
 
 # Clone repo
 mkdir -p $PROJECT_DIR

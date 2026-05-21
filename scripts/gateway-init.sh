@@ -14,7 +14,7 @@ export HOME=/root
 curl -fsSL https://bun.sh/install | bash
 
 # iii CLI
-curl -fsSL https://iii.dev/install.sh | bash
+curl -fsSL https://install.iii.dev/iii/main/install.sh | bash
 
 # Clone repo
 mkdir -p $PROJECT_DIR
