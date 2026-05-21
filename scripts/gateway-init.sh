@@ -5,28 +5,32 @@ INFERENCE_IP="${inference_private_ip}"
 PROJECT_DIR="/opt/alchemyst"
 REPO_URL="https://github.com/cotishq/alchemyst-devops-assignment.git"
 
+# curl-minimal is already installed on AL2023, don't reinstall curl
 dnf update -y
-dnf install -y git curl nginx
+dnf install -y git nginx
 
 # Node.js 20
-curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
-dnf install -y nodejs
+dnf install -y nodejs npm
 
 # Bun
+export HOME=/root
 curl -fsSL https://bun.sh/install | bash
 export BUN_INSTALL="/root/.bun"
 export PATH="$BUN_INSTALL/bin:$PATH"
+echo 'export BUN_INSTALL="/root/.bun"' >> /etc/environment
+echo 'export PATH="/root/.bun/bin:$PATH"' >> /etc/environment
 
 # iii CLI
 curl -fsSL https://iii.dev/install.sh | bash
 export PATH="/root/.iii/bin:$PATH"
+echo 'export PATH="/root/.iii/bin:$PATH"' >> /etc/environment
 
 # Clone repo
 mkdir -p $PROJECT_DIR
 git clone $REPO_URL $PROJECT_DIR
 cd $PROJECT_DIR/quickstart
 
-# Fix config.yaml with correct paths and host binding
+# Fix config.yaml
 cat > $PROJECT_DIR/quickstart/config.yaml << 'CONFIGEOF'
 workers:
   - name: iii-observability
@@ -77,9 +81,9 @@ CONFIGEOF
 
 # Install caller-worker deps
 cd $PROJECT_DIR/quickstart/workers/caller-worker
-bun install
+/root/.bun/bin/bun install
 
-# systemd service for iii engine
+# systemd: iii engine
 cat > /etc/systemd/system/iii-engine.service << 'SVCEOF'
 [Unit]
 Description=iii Engine
@@ -90,6 +94,7 @@ Type=simple
 User=root
 WorkingDirectory=/opt/alchemyst/quickstart
 Environment="PATH=/root/.iii/bin:/root/.bun/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="HOME=/root"
 ExecStart=/root/.iii/bin/iii --config /opt/alchemyst/quickstart/config.yaml
 Restart=always
 RestartSec=5
