@@ -86,7 +86,7 @@ User=root
 WorkingDirectory=/opt/alchemyst/quickstart
 Environment="PATH=/root/.iii/bin:/root/.bun/bin:/usr/local/bin:/usr/bin:/bin"
 Environment="HOME=/root"
-ExecStart=/root/.iii/bin/iii --config /opt/alchemyst/quickstart/config.yaml
+ExecStart=/root/.local/bin/iii --config /opt/alchemyst/quickstart/config.yaml
 Restart=always
 RestartSec=5
 StandardOutput=journal
