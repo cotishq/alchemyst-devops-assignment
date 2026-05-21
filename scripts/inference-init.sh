@@ -4,14 +4,13 @@ set -euxo pipefail
 PROJECT_DIR="/opt/alchemyst"
 REPO_URL="https://github.com/cotishq/alchemyst-devops-assignment.git"
 
-# Add 2GB swap for model loading
+# Add 2GB swap
 fallocate -l 2G /swapfile
 chmod 600 /swapfile
 mkswap /swapfile
 swapon /swapfile
 echo "/swapfile swap swap defaults 0 0" >> /etc/fstab
 
-# curl-minimal already present, don't install curl
 dnf update -y
 dnf install -y git python3 python3-pip
 
@@ -19,8 +18,6 @@ export HOME=/root
 
 # iii CLI
 curl -fsSL https://iii.dev/install.sh | bash
-export PATH="/root/.iii/bin:$PATH"
-echo 'export PATH="/root/.iii/bin:$PATH"' >> /etc/environment
 
 # Clone repo
 mkdir -p $PROJECT_DIR

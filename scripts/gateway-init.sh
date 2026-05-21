@@ -5,25 +5,16 @@ INFERENCE_IP="${inference_private_ip}"
 PROJECT_DIR="/opt/alchemyst"
 REPO_URL="https://github.com/cotishq/alchemyst-devops-assignment.git"
 
-# curl-minimal is already installed on AL2023, don't reinstall curl
+# AL2023 has curl-minimal, don't install curl
 dnf update -y
-dnf install -y git nginx
+dnf install -y git nginx nodejs npm
 
-# Node.js 20
-dnf install -y nodejs npm
-
-# Bun
+# Bun - install for root only, don't touch /etc/environment
 export HOME=/root
 curl -fsSL https://bun.sh/install | bash
-export BUN_INSTALL="/root/.bun"
-export PATH="$BUN_INSTALL/bin:$PATH"
-echo 'export BUN_INSTALL="/root/.bun"' >> /etc/environment
-echo 'export PATH="/root/.bun/bin:$PATH"' >> /etc/environment
 
 # iii CLI
 curl -fsSL https://iii.dev/install.sh | bash
-export PATH="/root/.iii/bin:$PATH"
-echo 'export PATH="/root/.iii/bin:$PATH"' >> /etc/environment
 
 # Clone repo
 mkdir -p $PROJECT_DIR
