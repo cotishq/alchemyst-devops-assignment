@@ -1,18 +1,19 @@
-# Distributed Inference System — DevOps Assignment
+# Distributed Inference System - DevOps Assignment
 
-A production-grade deployment of a distributed SLM (Small Language Model) inference system across multiple AWS EC2 instances in a private subnet. The system runs **Gemma 3 270M** (GGUF, CPU-quantized) behind a worker mesh orchestrated by the [iii framework](https://iii.dev), exposed as a JSON HTTP API through an nginx reverse proxy — all reproducible via Terraform.
+A production-grade deployment of a distributed SLM (Small Language Model) inference system across multiple AWS EC2 instances in a private subnet. The system runs **Gemma 3 270M** (GGUF, CPU-quantized) behind a worker mesh orchestrated by the [iii framework](https://iii.dev), exposed as a JSON HTTP API through an nginx reverse proxy - all reproducible via Terraform.
 
 ---
 
 ## Architecture
 
-![Architecture Diagram](image.png)
+<img width="1068" height="723" alt="image" src="https://github.com/user-attachments/assets/f6035c7c-396c-4ad2-99f9-e8e9fb5e39d1" />
+
 
 ### Component Overview
 
 | Component | VM | Subnet | Language | Function |
 |---|---|---|---|---|
-| **nginx** | vm-gateway | Public | — | Reverse proxy, forwards port 80 → iii HTTP |
+| **nginx** | vm-gateway | Public | - | Reverse proxy, forwards port 80 → iii HTTP |
 | **iii Engine** | vm-gateway | Public | Rust binary | Orchestrates workers, WebSocket RPC bus, HTTP API |
 | **Caller Worker** | vm-gateway | Public | TypeScript | Registers `inference::get_response`, triggers inference via RPC |
 | **Inference Worker** | vm-inference | Private | Python | Loads Gemma 270M, registers `inference::run_inference` |
@@ -206,22 +207,22 @@ terraform destroy
 
 Things I would do before putting this in production:
 
-- **HTTPS** — Put an ACM certificate behind an ALB or use Caddy for automatic Let's Encrypt. All traffic is currently plain HTTP.
-- **Authentication** — Add API key or JWT validation on the nginx layer. The endpoint is currently open to anyone.
-- **Secrets management** — Move `III_URL` and any API tokens to AWS Secrets Manager or SSM Parameter Store instead of environment variables in docker-compose files.
-- **Observability** — Ship container logs to CloudWatch via Fluent Bit; add Prometheus + Grafana dashboards for request latency and error rates (iii already exposes OpenTelemetry traces).
-- **SSH hardening** — Replace direct SSH access with AWS SSM Session Manager — no open port 22 at all.
-- **Instance resilience** — Wrap EC2 instances in Auto Scaling Groups (min=1) so failed instances are automatically replaced.
-- **Input validation** — Add a schema validation layer on nginx/API gateway to reject malformed payloads before they reach workers.
+- **HTTPS** - Put an ACM certificate behind an ALB or use Caddy for automatic Let's Encrypt. All traffic is currently plain HTTP.
+- **Authentication** - Add API key or JWT validation on the nginx layer. The endpoint is currently open to anyone.
+- **Secrets management** - Move `III_URL` and any API tokens to AWS Secrets Manager or SSM Parameter Store instead of environment variables in docker-compose files.
+- **Observability** - Ship container logs to CloudWatch via Fluent Bit; add Prometheus + Grafana dashboards for request latency and error rates (iii already exposes OpenTelemetry traces).
+- **SSH hardening** - Replace direct SSH access with AWS SSM Session Manager — no open port 22 at all.
+- **Instance resilience** - Wrap EC2 instances in Auto Scaling Groups (min=1) so failed instances are automatically replaced.
+- **Input validation** - Add a schema validation layer on nginx/API gateway to reject malformed payloads before they reach workers.
 
 ---
 
 ## Scaling to 100x Larger Model (~27B parameters)
 
-- **GPU instances** — Move inference-worker to `g4dn.xlarge` (T4, 16GB VRAM) or `g5.xlarge` (A10G, 24GB VRAM). A 27B model in Q4 quantization fits in ~16GB VRAM.
-- **Model storage** — Store the GGUF file on EFS or S3 and mount it at runtime instead of baking a 30GB+ Docker image. Boot time drops from minutes to seconds.
-- **Inference server** — Replace raw `transformers` with `llama.cpp` HTTP server or `vLLM` for batching, KV-cache reuse, and continuous batching — 10–50x higher throughput.
-- **Request queuing** — Add SQS between caller-worker and inference-worker. Inference at this scale takes 5–30 seconds; a queue decouples the API tier and prevents timeouts.
-- **Autoscaling** — Auto Scaling Group on inference VMs triggered by SQS queue depth via CloudWatch. Scale in/out based on demand.
-- **Multi-AZ** — Spread inference VMs across two availability zones for resilience.
-- **Spot Instances** — Use EC2 Spot for inference VMs to cut compute cost by 60–90%.
+- **GPU instances** - Move inference-worker to `g4dn.xlarge` (T4, 16GB VRAM) or `g5.xlarge` (A10G, 24GB VRAM). A 27B model in Q4 quantization fits in ~16GB VRAM.
+- **Model storage** - Store the GGUF file on EFS or S3 and mount it at runtime instead of baking a 30GB+ Docker image. Boot time drops from minutes to seconds.
+- **Inference server** - Replace raw `transformers` with `llama.cpp` HTTP server or `vLLM` for batching, KV-cache reuse, and continuous batching — 10–50x higher throughput.
+- **Request queuing** - Add SQS between caller-worker and inference-worker. Inference at this scale takes 5–30 seconds; a queue decouples the API tier and prevents timeouts.
+- **Autoscaling** - Auto Scaling Group on inference VMs triggered by SQS queue depth via CloudWatch. Scale in/out based on demand.
+- **Multi-AZ** - Spread inference VMs across two availability zones for resilience.
+- **Spot Instances** - Use EC2 Spot for inference VMs to cut compute cost by 60–90%.
