@@ -1,201 +1,186 @@
-# Distributed Inference System - DevOps Assignment
+# Distributed SLM Inference System (DevOps Deployment)
 
-A production-grade deployment of a distributed SLM (Small Language Model) inference system across multiple AWS EC2 instances in a private subnet. The system runs **Gemma 3 270M** (GGUF, CPU-quantized) behind a worker mesh orchestrated by the [iii framework](https://iii.dev), exposed as a JSON HTTP API through an nginx reverse proxy - all reproducible via Terraform.
+This repository contains the infrastructure and code for a secure, distributed Small Language Model (SLM) inference system deployed on AWS. Utilizing Terraform for Infrastructure as Code (IaC) and Docker for containerization, the system runs the **Gemma 3 270M** model on private instances. Worker nodes communicate via the **iii framework** WebSocket RPC bus, while a public gateway exposes the service via an Nginx reverse proxy.
 
 ---
 
-## Architecture
+## System Architecture
 
 <img width="1068" height="723" alt="image" src="https://github.com/user-attachments/assets/f6035c7c-396c-4ad2-99f9-e8e9fb5e39d1" />
 
+### Infrastructure Components
 
-### Component Overview
+| Component | Host VM | Network Subnet | Runtime Stack | Responsibility |
+| :--- | :--- | :--- | :--- | :--- |
+| **Nginx** | `vm-gateway` | Public | Native Service | Reverse proxy, forwards inbound port 80 traffic to `iii` Engine |
+| **iii Engine** | `vm-gateway` | Public | Rust Binary | Orchestrator, WebSocket RPC broker, HTTP API handler |
+| **Caller Worker** | `vm-gateway` | Public | Bun / TypeScript | Registers `inference::get_response` RPC, delegates calls |
+| **Inference Worker** | `vm-inference` | Private | Python / PyTorch | Loads Gemma 3 270M GGUF model, registers `inference::run_inference` |
 
-| Component | VM | Subnet | Language | Function |
-|---|---|---|---|---|
-| **nginx** | vm-gateway | Public | - | Reverse proxy, forwards port 80 → iii HTTP |
-| **iii Engine** | vm-gateway | Public | Rust binary | Orchestrates workers, WebSocket RPC bus, HTTP API |
-| **Caller Worker** | vm-gateway | Public | TypeScript | Registers `inference::get_response`, triggers inference via RPC |
-| **Inference Worker** | vm-inference | Private | Python | Loads Gemma 270M, registers `inference::run_inference` |
+### Network & Security Architecture
 
-### Network Design
+The deployment isolates resources using a multi-subnet VPC design (`10.0.0.0/16`) in the `ap-south-1` region:
+* **Public Subnet (`10.0.1.0/24`)**: Hosts the gateway instance (`vm-gateway`). It is the sole public-facing node, allowing inbound SSH (port 22) from designated admin IPs and web traffic (port 80).
+* **Private Subnet (`10.0.2.0/24`)**: Houses the inference engine instance (`vm-inference`). This subnet has no direct internet ingress. Outbound traffic (e.g., pulling Docker images or model files) is securely routed through an **AWS NAT Gateway** residing in the public subnet.
+* **Internal RPC Messaging**: Communication between the gateway and inference worker utilizes local VPC routing via WebSocket (`ws://<gateway_private_ip>:49134`).
+* **Bastion Host Pattern**: To ensure maximum security, the private inference instance cannot be accessed directly via SSH. Admin access requires tunneling/jumping through `vm-gateway` as a bastion host.
 
-All VMs live inside a dedicated VPC (`10.0.0.0/16`) in `ap-south-1` (Mumbai):
+---
 
-- **vm-gateway** (t3.micro, public subnet `10.0.1.0/24`) — the only machine reachable from the internet. Accepts HTTP on port 80 and serves as the RPC engine on port 49134.
-- **vm-inference** (t3.small, private subnet `10.0.2.0/24`) — no public IP, not reachable from the internet. Only reachable from within the VPC via the gateway.
-- **NAT Gateway** — allows the private subnet to reach the internet outbound (for Docker pulls, model downloads) while blocking all unsolicited inbound traffic.
-- **SSH access** — vm-gateway is accessible directly; vm-inference is only accessible by jumping through vm-gateway (bastion pattern).
+### Request & RPC Flow
 
-### RPC Flow
+Below is the sequence diagram illustrating how a public HTTP API request triggers private distributed LLM inference:
 
-```
-curl POST /v1/chat/completions  (internet)
-  → nginx :80                   (vm-gateway, public)
-  → iii engine :3111            (vm-gateway, internal)
-  → caller-worker               (TypeScript, Docker container)
-    → iii.trigger("inference::run_inference")
-      → WebSocket RPC ws://10.0.1.251:49134
-        → inference-worker      (Python, vm-inference, PRIVATE)
-          → Gemma 3 270M GGUF   (CPU inference)
-      → result bubbles back
-  → JSON response to client
+```mermaid
+sequenceDiagram
+    actor Client
+    participant Nginx as Nginx (Gateway:80)
+    participant Engine as iii Engine (Gateway:3111)
+    participant Caller as Caller Worker (Gateway:Docker)
+    participant Inference as Inference Worker (Private VM:Docker)
+
+    Client->>Nginx: POST /v1/chat/completions
+    Nginx->>Engine: Forward HTTP Request
+    Engine->>Caller: Trigger RPC Callback
+    Caller->>Engine: Send 'inference::run_inference' Event
+    Engine->>Inference: Route Event over WebSocket (Port 49134)
+    Note over Inference: Run Gemma 3 270M CPU inference
+    Inference->>Engine: Return Text Generation Result
+    Engine->>Caller: Return Response to Caller
+    Caller->>Engine: Complete Request
+    Engine->>Nginx: Send JSON Response
+    Nginx->>Client: Send HTTP 200 OK Response
 ```
 
 ---
 
-## API
+## API Endpoints
 
 ### Run Inference
 
+* **Endpoint**: `POST /v1/chat/completions`
+* **Headers**: `Content-Type: application/json`
+
+**Sample Request**:
 ```bash
-curl -X POST http://13.127.179.207/v1/chat/completions \
+curl -X POST http://<GATEWAY_PUBLIC_IP>/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "messages": [
-      {"role": "user", "content": "Explain quantum entanglement in simple terms."}
+      {"role": "user", "content": "Explain gravity in one sentence."}
     ]
   }'
 ```
 
-**Response:**
-
+**Sample Response**:
 ```json
 {
   "result": {
-    "response": "Quantum entanglement is a phenomenon where two particles become linked...",
-    "success": "You've connected two workers and they're interoperating seamlessly..."
+    "response": "Gravity is the force by which a planet or other body draws objects toward its center.",
+    "success": "Inference successfully completed via distributed RPC workers."
   }
 }
 ```
 
-### Request Schema
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `messages` | Array | Yes | Chat messages in OpenAI-compatible format |
-| `messages[].role` | String | Yes | `"user"`, `"assistant"`, or `"system"` |
-| `messages[].content` | String | Yes | Message content |
-
 ---
 
-## Repository Structure
+## Project Structure
 
 ```
-.
-├── architecture.png             # Architecture diagram
-├── quickstart/
-│   ├── config.yaml              # iii engine configuration
-│   └── workers/
-│       ├── caller-worker/       # TypeScript — routes HTTP → RPC
-│       │   └── src/worker.ts
-│       └── inference-worker/    # Python — runs Gemma 3 270M
-│           ├── inference_worker.py
-│           └── requirements.txt
-├── docker/
-│   ├── engine/
-│   │   └── Dockerfile           # iii engine container
-│   ├── caller-worker/
-│   │   └── Dockerfile           # Bun + TypeScript container
-│   └── inference-worker/
-│       └── Dockerfile           # Python 3.11 + CPU torch + Gemma model
-├── terraform/
-│   ├── main.tf                  # Provider, VPC, subnets, IGW, NAT, route tables
-│   ├── variables.tf             # Configurable inputs
-│   ├── security_groups.tf       # Firewall rules (gateway public, inference private)
-│   ├── ec2.tf                   # 2 EC2 instances with user-data bootstrap
-│   ├── outputs.tf               # Public IPs, SSH commands, API endpoint
-│   └── terraform.tfvars         # Your values (gitignored)
-├── scripts/
-│   ├── gateway-init.sh          # Bootstrap: installs Docker, pulls images, starts containers
-│   ├── inference-init.sh        # Bootstrap: installs Docker, pulls inference image
-│   └── start-inference.sh       # Post-deploy: patches III_URL and starts inference worker
-└── nginx/
-    └── alchemyst.conf           # nginx reverse proxy config
+alchemyst-devops-assignment/
+├── docker/                  # Dockerfiles for containerized services
+│   ├── engine/              # Configuration for the iii engine
+│   ├── caller-worker/       # TypeScript/Bun execution container
+│   └── inference-worker/    # PyTorch/Python CPU Gemma image
+├── nginx/                   # Nginx reverse proxy configuration
+├── quickstart/              # Local testing configuration & source files
+│   ├── config.yaml          # iii Engine orchestration settings
+│   └── workers/             # Codebase for both caller & inference nodes
+│       ├── caller-worker/
+│       └── inference-worker/
+├── scripts/                 # Instance bootstrapping shell scripts
+└── terraform/               # Infrastructure as Code resources
 ```
 
----
+### Docker Image Registry
 
-## Docker Images
-
-All services are containerized and hosted on Docker Hub under [`cotishq`](https://hub.docker.com/u/cotishq):
-
-| Image | Contents |
-|---|---|
-| `cotishq/alchemyst-engine` | iii engine binary + config.yaml |
-| `cotishq/alchemyst-caller` | Bun + TypeScript caller-worker |
-| `cotishq/alchemyst-inference` | Python 3.11 + CPU PyTorch + Gemma 3 270M GGUF |
+The system components are containerized and published on Docker Hub under the `cotishq` organization namespace:
+* **Orchestrator**: `cotishq/alchemyst-engine` (Houses the `iii` engine binary and configuration)
+* **API Router**: `cotishq/alchemyst-caller` (Bun + TypeScript caller-worker)
+* **Inference Engine**: `cotishq/alchemyst-inference` (Python environment with PyTorch & Gemma 3 270M GGUF model)
 
 ---
 
-## Deploy from Scratch
+## Setup and Deployment Guide
 
 ### Prerequisites
 
-- AWS CLI configured (`aws configure`)
-- [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.3
-- Docker (for rebuilding images locally if needed)
-- An EC2 key pair in `ap-south-1`
+* Installed and configured **AWS CLI** with valid credentials (`aws configure`)
+* **Terraform CLI** (version `>= 1.3`)
+* **Docker Desktop / Engine** (for local testing/building if modifying source images)
+* An active **AWS EC2 Key Pair** in the `ap-south-1` region
 
-### Steps
+### Deployment Walkthrough
 
+#### 1. Clone the Repository
+Ensure you are in the project root:
 ```bash
-# 1. Clone the repo
 git clone https://github.com/cotishq/alchemyst-devops-assignment.git
 cd alchemyst-devops-assignment
+```
 
-# 2. Create terraform.tfvars
-cat > terraform/terraform.tfvars << EOF
+#### 2. Configure Environment Variables
+Create a `terraform.tfvars` file inside the `terraform` directory with your specific AWS context:
+```bash
+cat <<EOF > terraform/terraform.tfvars
 aws_region = "ap-south-1"
 key_name   = "your-ec2-keypair"
 your_ip    = "$(curl -s https://checkip.amazonaws.com)/32"
 EOF
+```
 
-# 3. Deploy infrastructure
+#### 3. Provision Infrastructure via Terraform
+Initialize and apply the configuration:
+```bash
 cd terraform
 terraform init
-terraform plan
-terraform apply
+terraform plan -out=tfplan
+terraform apply tfplan
+```
+*Take note of the outputs: `gateway_public_ip`, `gateway_private_ip`, and `inference_private_ip`.*
 
-# 4. Note the outputs
-# gateway_public_ip, gateway_private_ip, inference_private_ip
+#### 4. Bootstrap the Gateway Instance
+Wait approximately 3 minutes for cloud-init bootstrap scripts to finish setting up the systems.
 
-# 5. Wait ~3 minutes for bootstrap scripts to complete
-# Then SSH into gateway and start containers
+SSH into the Gateway instance to launch the API and Orchestrator containers:
+```bash
 ssh -i ~/.ssh/your-key.pem ec2-user@<GATEWAY_PUBLIC_IP>
 sudo -i
 cd /opt/alchemyst
 docker compose up -d
+```
 
-# 6. SSH into inference VM via gateway and start inference container
+#### 5. Bootstrap the Private Inference Node
+Connect to the private inference instance through the Gateway instance, update the WebSocket address, and launch the inference service:
+```bash
+# SSH into Gateway first
 ssh -i ~/.ssh/your-key.pem ec2-user@<GATEWAY_PUBLIC_IP>
+
+# From the Gateway, SSH into the Private Inference VM
 ssh -i ~/.ssh/your-key.pem ec2-user@<INFERENCE_PRIVATE_IP>
 sudo -i
 cd /opt/alchemyst
-# Edit docker-compose.yml: set III_URL=ws://<GATEWAY_PRIVATE_IP>:49134
-docker compose up -d
 
-# 7. Test
-curl -X POST http://<GATEWAY_PUBLIC_IP>/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"What is 2+2?"}]}'
+# Configure the private WebSocket target URL in docker-compose.yml
+# Set III_URL to: ws://<GATEWAY_PRIVATE_IP>:49134
+vi docker-compose.yml
+
+# Launch the container
+docker compose up -d
 ```
 
-### What Terraform Creates
-
-| Resource | Count | Purpose |
-|---|---|---|
-| VPC | 1 | Isolated network `10.0.0.0/16` |
-| Public Subnet | 1 | Hosts vm-gateway `10.0.1.0/24` |
-| Private Subnet | 1 | Hosts vm-inference `10.0.2.0/24` |
-| Internet Gateway | 1 | Public subnet → internet |
-| NAT Gateway | 1 | Private subnet → internet (outbound only) |
-| Security Groups | 2 | Gateway (public 80/22) + Inference (private 49134 only) |
-| EC2 Instances | 2 | vm-gateway (t3.micro) + vm-inference (t3.small) |
-| Elastic IP | 1 | Static IP for NAT Gateway |
-
-### Tear Down
-
+#### 6. Clean Up
+To tear down the AWS resources:
 ```bash
 cd terraform
 terraform destroy
@@ -203,26 +188,24 @@ terraform destroy
 
 ---
 
-## Production Hardening
+## Production Best Practices & Hardening
 
-Things I would do before putting this in production:
-
-- **HTTPS** - Put an ACM certificate behind an ALB or use Caddy for automatic Let's Encrypt. All traffic is currently plain HTTP.
-- **Authentication** - Add API key or JWT validation on the nginx layer. The endpoint is currently open to anyone.
-- **Secrets management** - Move `III_URL` and any API tokens to AWS Secrets Manager or SSM Parameter Store instead of environment variables in docker-compose files.
-- **Observability** - Ship container logs to CloudWatch via Fluent Bit; add Prometheus + Grafana dashboards for request latency and error rates (iii already exposes OpenTelemetry traces).
-- **SSH hardening** - Replace direct SSH access with AWS SSM Session Manager — no open port 22 at all.
-- **Instance resilience** - Wrap EC2 instances in Auto Scaling Groups (min=1) so failed instances are automatically replaced.
-- **Input validation** - Add a schema validation layer on nginx/API gateway to reject malformed payloads before they reach workers.
+Prior to deploying this system to production, the following enhancements should be implemented:
+* **Transport Layer Security (HTTPS)**: Implement SSL/TLS termination by placing an Application Load Balancer (ALB) in front of Nginx, or using Caddy with Let's Encrypt certificates.
+* **Access Control & Auth**: Protect the public `/v1/chat/completions` endpoint by adding API key authorization, JWT verification, or OAuth2 middleware at the Nginx ingress layer.
+* **Dynamic Secrets Management**: Secure connection strings, keys, and endpoints like `III_URL` by retrieving them at runtime from AWS Secrets Manager or Systems Manager (SSM) Parameter Store.
+* **Telemetry & Monitoring**: Set up centralized log aggregation (e.g., AWS CloudWatch Logs via Fluent Bit) and monitoring metrics using Prometheus and Grafana (leveraging the OpenTelemetry hooks built into `iii`).
+* **Access Security (SSM)**: Disable open SSH port 22 entirely on security groups, and utilize AWS Systems Manager Session Manager for shell access to nodes.
+* **High Availability**: Deploy instances across multiple Availability Zones (Multi-AZ) and place them inside Auto Scaling Groups (ASGs) to automatically recover from hardware failures.
+* **Payload Validation**: Integrate JSON schema validation at the gateway level to reject bad requests early before they consume precious downstream LLM worker cycles.
 
 ---
 
-## Scaling to 100x Larger Model (~27B parameters)
+## Scaling for Large Models (e.g., 27B Parameters)
 
-- **GPU instances** - Move inference-worker to `g4dn.xlarge` (T4, 16GB VRAM) or `g5.xlarge` (A10G, 24GB VRAM). A 27B model in Q4 quantization fits in ~16GB VRAM.
-- **Model storage** - Store the GGUF file on EFS or S3 and mount it at runtime instead of baking a 30GB+ Docker image. Boot time drops from minutes to seconds.
-- **Inference server** - Replace raw `transformers` with `llama.cpp` HTTP server or `vLLM` for batching, KV-cache reuse, and continuous batching — 10–50x higher throughput.
-- **Request queuing** - Add SQS between caller-worker and inference-worker. Inference at this scale takes 5–30 seconds; a queue decouples the API tier and prevents timeouts.
-- **Autoscaling** - Auto Scaling Group on inference VMs triggered by SQS queue depth via CloudWatch. Scale in/out based on demand.
-- **Multi-AZ** - Spread inference VMs across two availability zones for resilience.
-- **Spot Instances** - Use EC2 Spot for inference VMs to cut compute cost by 60–90%.
+Scaling to support massive models requires upgrading the infrastructure and compute paradigm:
+* **Accelerated Compute (GPUs)**: Migrate inference workloads from CPU instances to GPU-accelerated EC2 instances (e.g., `g5.xlarge` with NVIDIA A10G or `g6.xlarge`).
+* **Decoupled Model Storage**: Instead of bundling massive weights in Docker images, store the GGUF/model weights on AWS Elastic File System (EFS) or S3, and mount/download them dynamically on instance boot.
+* **Dedicated Inference Engines**: Replace standard PyTorch/Transformers pipelines with high-throughput engines like `vLLM` or `llama.cpp` server to benefit from continuous batching, KV caching, and optimized kernels.
+* **Asynchronous Processing**: Decouple the request flow by putting an Amazon SQS queue between the gateway worker and the inference nodes. This prevents client timeouts during peak load or long generation times.
+* **Predictive Autoscaling**: Configure Auto Scaling Groups for the inference worker pool based on SQS queue depth or custom CloudWatch metrics to dynamically handle load spikes.
