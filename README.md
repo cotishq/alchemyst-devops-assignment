@@ -2,6 +2,10 @@
 
 This repository contains the infrastructure and code for a secure, distributed Small Language Model (SLM) inference system deployed on AWS. Utilizing Terraform for Infrastructure as Code (IaC) and Docker for containerization, the system runs the **Gemma 3 270M** model on private instances. Worker nodes communicate via the **iii framework** WebSocket RPC bus, while a public gateway exposes the service via an Nginx reverse proxy.
 
+> [!NOTE]
+> **Submission Status / Known Issues**  
+> The core infrastructure (Terraform provisioning, multi-subnet network isolation, NAT Gateway, and Nginx proxy routing) is fully operational. However, the `inference-worker` container currently faces a startup issue during initialization, meaning the end-to-end inference `/v1/chat/completions` API endpoint is not yet fully functional.
+
 ---
 
 ## System Architecture
